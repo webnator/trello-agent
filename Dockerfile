@@ -45,7 +45,7 @@ USER agent
 
 # Install bun for the agent user
 RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/home/agent/.bun/bin:${PATH}"
+ENV PATH="/home/agent/.local/bin:/home/agent/.bun/bin:${PATH}"
 
 # Set git identity for automated commits
 RUN git config --global user.name "Trello Agent" && \
