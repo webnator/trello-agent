@@ -14,10 +14,6 @@ FROM node:22-slim
 
 RUN apt-get update && apt-get install -y git curl unzip && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI (native installer)
-RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://claude.ai/install.sh | bash
-
 # Install Vercel CLI
 RUN npm install -g vercel
 
@@ -43,8 +39,9 @@ RUN useradd -m -s /bin/bash agent && \
     echo "agent ALL=(ALL) NOPASSWD: /bin/chown" >> /etc/sudoers.d/agent
 USER agent
 
-# Install bun for the agent user
-RUN curl -fsSL https://bun.sh/install | bash
+# Install Claude Code CLI and bun for the agent user
+RUN curl -fsSL https://claude.ai/install.sh | bash && \
+    curl -fsSL https://bun.sh/install | bash
 ENV PATH="/home/agent/.local/bin:/home/agent/.bun/bin:${PATH}"
 
 # Set git identity for automated commits
