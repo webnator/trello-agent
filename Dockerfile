@@ -32,9 +32,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm and bun
-RUN npm install -g pnpm && \
-    curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
+RUN npm install -g pnpm
+
+# Create non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
+RUN useradd -m -s /bin/bash agent
+USER agent
+
+# Install bun for the agent user
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/home/agent/.bun/bin:${PATH}"
 
 # Set git identity for automated commits
 RUN git config --global user.name "Trello Agent" && \
@@ -42,12 +48,13 @@ RUN git config --global user.name "Trello Agent" && \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# Copy app files (owned by root, readable by agent)
+COPY --chown=agent:agent package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY --from=build /app/dist ./dist
+COPY --from=build --chown=agent:agent /app/dist ./dist
 
-# Create workspace directory
+# Create workspace directory owned by agent
 RUN mkdir -p /workspace
 
 ENV NODE_ENV=production

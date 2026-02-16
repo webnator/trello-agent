@@ -5,8 +5,8 @@ services:
     env_file: .env
     volumes:
       - workspace:/workspace
-      - claude-config:/root/.claude
-      - ${PROJECTS_FILE:-${HOME}/.trello-agent/projects.json}:/root/.trello-agent/projects.json
+      - claude-config:/home/agent/.claude
+      - ${PROJECTS_FILE:-${HOME}/.trello-agent/projects.json}:/home/agent/.trello-agent/projects.json
     healthcheck:
       test: ["CMD", "node", "-e", "try { const s = require('fs').statSync('/tmp/trello-agent-alive'); process.exit(Date.now() - s.mtimeMs < 120000 ? 0 : 1); } catch { process.exit(1); }"]
       interval: 60s
