@@ -15,7 +15,8 @@ FROM node:22-slim
 RUN apt-get update && apt-get install -y git curl unzip && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI (native installer)
-RUN curl -fsSL https://claude.ai/install.sh | sh
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL https://claude.ai/install.sh | bash
 
 # Install Vercel CLI
 RUN npm install -g vercel
