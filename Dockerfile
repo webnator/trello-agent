@@ -21,10 +21,7 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g vercel
 
 # Install Supabase CLI
-RUN ARCH=$(dpkg --print-architecture) && \
-    VERSION=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//') && \
-    curl -fsSL "https://github.com/supabase/cli/releases/download/v${VERSION}/supabase_${VERSION}_linux_${ARCH}.deb" -o /tmp/supabase.deb && \
-    dpkg -i /tmp/supabase.deb && rm /tmp/supabase.deb
+RUN npm install -g supabase
 
 # Install GitHub CLI (via official apt repo)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
