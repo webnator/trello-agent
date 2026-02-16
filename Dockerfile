@@ -31,11 +31,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
-# Install pnpm and bun
+# Install pnpm
 RUN npm install -g pnpm
 
 # Create non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
-RUN useradd -m -s /bin/bash agent
+RUN useradd -m -s /bin/bash agent && \
+    mkdir -p /workspace && chown agent:agent /workspace
 USER agent
 
 # Install bun for the agent user
@@ -53,9 +54,6 @@ COPY --chown=agent:agent package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY --from=build --chown=agent:agent /app/dist ./dist
-
-# Create workspace directory owned by agent
-RUN mkdir -p /workspace
 
 ENV NODE_ENV=production
 ENV WORKSPACE_DIR=/workspace
