@@ -22,7 +22,8 @@ RUN npm install -g vercel
 
 # Install Supabase CLI
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://github.com/supabase/cli/releases/latest/download/supabase_linux_${ARCH}.deb" -o /tmp/supabase.deb && \
+    VERSION=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//') && \
+    curl -fsSL "https://github.com/supabase/cli/releases/download/v${VERSION}/supabase_${VERSION}_linux_${ARCH}.deb" -o /tmp/supabase.deb && \
     dpkg -i /tmp/supabase.deb && rm /tmp/supabase.deb
 
 # Install GitHub CLI (via official apt repo)
