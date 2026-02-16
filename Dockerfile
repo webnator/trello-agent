@@ -35,8 +35,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN npm install -g pnpm
 
 # Create non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
+# Grant sudo for entrypoint volume ownership fixes (no password)
 RUN useradd -m -s /bin/bash agent && \
-    mkdir -p /workspace && chown agent:agent /workspace
+    mkdir -p /workspace && chown agent:agent /workspace && \
+    apt-get update && apt-get install -y sudo && rm -rf /var/lib/apt/lists/* && \
+    echo "agent ALL=(ALL) NOPASSWD: /bin/chown" >> /etc/sudoers.d/agent
 USER agent
 
 # Install bun for the agent user
@@ -55,7 +58,11 @@ RUN npm ci --omit=dev
 
 COPY --from=build --chown=agent:agent /app/dist ./dist
 
+COPY --chown=agent:agent entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 ENV NODE_ENV=production
 ENV WORKSPACE_DIR=/workspace
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["node", "dist/src/daemon.js"]
