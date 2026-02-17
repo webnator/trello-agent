@@ -194,6 +194,11 @@ export async function addTaskAttachment(
   return attachment;
 }
 
+export function getAllTasks(projectName: string): Task[] {
+  const store = loadStore(projectName);
+  return store.tasks;
+}
+
 export function getAttachmentPaths(task: Task): string[] {
   return task.attachments.map((a) => a.filePath);
 }

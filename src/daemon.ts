@@ -3,6 +3,7 @@ import { pollLoop, stopPolling } from "./lib/poller.js";
 import { startBot, stopBot } from "./lib/telegram.js";
 import { loadRegistry, getAllProjects } from "./lib/projects.js";
 import { getActiveClaudeProcesses } from "./lib/claude.js";
+import { startDashboard, stopDashboard } from "./lib/dashboard.js";
 
 console.log("Task Agent Daemon starting...");
 
@@ -50,6 +51,7 @@ function shutdown(signal: string): void {
   console.log(`\n${signal} received. Shutting down gracefully...`);
   stopPolling();
   stopBot();
+  stopDashboard();
 
   // Kill all in-flight Claude processes
   const activeProcs = getActiveClaudeProcesses();
@@ -80,3 +82,4 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 const interval = parseInt(process.env.POLL_INTERVAL_MS || "30000", 10);
 pollLoop(interval);
 startBot();
+startDashboard();

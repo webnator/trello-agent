@@ -49,6 +49,7 @@ async function registerCommands(bot: Bot): Promise<void> {
       { command: "project", description: "Switch active project" },
       { command: "ask", description: "Ask a question about the active project" },
       { command: "newproject", description: "Create a new project" },
+      { command: "dashboard", description: "Show dashboard URL" },
       { command: "help", description: "Show available commands" },
     ]);
   } catch (err) {
@@ -280,6 +281,12 @@ export async function startBot(): Promise<void> {
     await handleAskQuestion(chatId, question, ctx);
   });
 
+  bot.command("dashboard", async (ctx) => {
+    const port = process.env.DASHBOARD_PORT || "3000";
+    const host = process.env.DASHBOARD_HOST || "46.225.141.53";
+    await ctx.reply(`Dashboard: http://${host}:${port}`);
+  });
+
   bot.command("help", async (ctx) => {
     const chatId = ctx.chat.id;
     const activeProject = getActiveProject(chatId);
@@ -295,6 +302,7 @@ export async function startBot(): Promise<void> {
       "  /status — Show tasks in todo and in progress\n" +
       "  /url — Show production URL (Vercel)\n" +
       "  /seturl <url> — Set production URL\n" +
+      "  /dashboard — Show dashboard URL\n" +
       "  /projects — List all registered projects\n" +
       "  /project — Select active project (inline keyboard)\n" +
       "  /project <name> — Switch to a specific project\n" +

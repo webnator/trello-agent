@@ -9,6 +9,8 @@ services:
       - vercel-config:/home/agent/.local/share/com.vercel.cli
       - task-data:/home/agent/.task-agent/data
       - ${PROJECTS_FILE:-${HOME}/.task-agent/projects.json}:/home/agent/.task-agent/projects.json
+    ports:
+      - "3000:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "try { const s = require('fs').statSync('/tmp/task-agent-alive'); process.exit(Date.now() - s.mtimeMs < 120000 ? 0 : 1); } catch { process.exit(1); }"]
       interval: 60s
