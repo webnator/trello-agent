@@ -677,6 +677,75 @@ async function handleAskQuestion(
   }
 }
 
+// Helper function to create Vercel project and link GitHub repo
+async function setupVercelProject(
+  name: string,
+  org: string,
+  ctx: { reply: (text: string, options?: object) => Promise<unknown> }
+): Promise<{ url: string } | null> {
+  const token = process.env.VERCEL_TOKEN;
+  const teamId = process.env.VERCEL_TEAM_ID;
+  if (!token) {
+    await ctx.reply("VERCEL_TOKEN not set — skipping Vercel setup.");
+    return null;
+  }
+
+  const teamQuery = teamId ? `?teamId=${teamId}` : "";
+
+  try {
+    // 1. Create Vercel project
+    const createRes = await fetch(`https://api.vercel.com/v10/projects${teamQuery}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name,
+        framework: "nextjs",
+      }),
+    });
+
+    if (!createRes.ok) {
+      const body = await createRes.text();
+      // Project may already exist — not fatal
+      if (!body.includes("already exist")) {
+        await ctx.reply(`Vercel project creation failed: ${body}`);
+        return null;
+      }
+    }
+
+    await ctx.reply(`Vercel project created: ${name}`);
+
+    // 2. Link GitHub repo
+    const linkRes = await fetch(`https://api.vercel.com/v9/projects/${name}/link${teamQuery}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "github",
+        repo: `${org}/${name}`,
+      }),
+    });
+
+    if (linkRes.ok) {
+      await ctx.reply(`Vercel linked to GitHub: ${org}/${name}`);
+    } else {
+      const body = await linkRes.text();
+      await ctx.reply(`Vercel GitHub link failed (non-fatal): ${body}`);
+    }
+
+    const url = `https://${name}.vercel.app`;
+    return { url };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`Vercel setup error (non-fatal): ${msg}`);
+    return null;
+  }
+}
+
 // Helper function to handle new project creation
 async function handleNewProject(
   chatId: number,
@@ -724,10 +793,12 @@ async function handleNewProject(
     // 4. Auto-switch to new project
     setActiveProject(chatId, name);
 
-    // 5. If Vercel flag, create initial scaffolding task
+    // 5. If Vercel flag, set up Vercel project + GitHub link, then create scaffold task
     if (isVercel) {
+      const vercelResult = await setupVercelProject(name, org, ctx);
+
       const scaffoldDesc = `## Objective
-Create a modern Next.js 14+ landing page and deploy it to Vercel.
+Create a modern Next.js 14+ landing page.
 
 ## Requirements
 
@@ -741,41 +812,19 @@ Run: \`npx create-next-app@latest . --typescript --tailwind --eslint --app --src
 - Hero section on the home page
 - Use App Router (not Pages Router)
 
-### 3. Deploy to Vercel and connect GitHub repo
-\`$VERCEL_TOKEN\` is set in the environment. The Vercel team ID is \`team_aVipwBHnAR8J6DBO7d32ZSRB\`. Follow these steps EXACTLY:
-
-**Step 3a: Deploy to Vercel**
-\`\`\`
-vercel --prod --token $VERCEL_TOKEN --yes --scope team_aVipwBHnAR8J6DBO7d32ZSRB
-\`\`\`
-This creates the Vercel project and deploys. Note the production URL from the output.
-
-**Step 3b: Connect GitHub repo for auto-deploy on push**
-Use the Vercel API (NOT the CLI) to link the GitHub repo. The endpoint is \`POST /v9/projects/{project-name}/link\`:
-\`\`\`
-curl -s -X POST "https://api.vercel.com/v9/projects/${name}/link?teamId=team_aVipwBHnAR8J6DBO7d32ZSRB" \\
-  -H "Authorization: Bearer $VERCEL_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"type":"github","repo":"${org}/${name}"}'
-\`\`\`
-Verify the response JSON contains a \`"link"\` object with \`"type":"github"\` and \`"repo":"${name}"\`.
-
-### 4. Save production URL
-Edit \`~/.task-agent/projects.json\` and add a \`vercelUrl\` field to the "${name}" project with the production URL (e.g., "https://${name}.vercel.app").
-
-### 5. Verify
+### 3. Verify
 - \`npm run build\` succeeds
-- Production URL is accessible
 
 ## Notes
-- NEVER use interactive commands — always pass \`--yes\` and \`--token $VERCEL_TOKEN\`
-- ALWAYS pass \`--scope team_aVipwBHnAR8J6DBO7d32ZSRB\` when using the Vercel CLI
-- ALWAYS pass \`?teamId=team_aVipwBHnAR8J6DBO7d32ZSRB\` when calling the Vercel API
-- Do NOT use \`vercel link\` — it does not work in non-interactive mode
-- Do NOT use \`PATCH /v9/projects\` with \`gitRepository\` — that field does not exist. Use \`POST /v9/projects/{name}/link\` instead.`;
+- Vercel project is already created and linked to GitHub. It will auto-deploy when changes are pushed to main.
+- Just focus on the Next.js code — no deployment steps needed.`;
 
-      createTask(name, "Scaffold Next.js landing page + deploy to Vercel", scaffoldDesc);
-      await ctx.reply(`Scaffolding task created. The agent will set up Next.js and Vercel.`);
+      createTask(name, "Scaffold Next.js landing page", scaffoldDesc);
+      await ctx.reply(`Scaffolding task created. The agent will set up Next.js.`);
+
+      if (vercelResult?.url) {
+        updateProjectUrl(name, vercelResult.url);
+      }
     }
 
     const successMsg = isVercel
