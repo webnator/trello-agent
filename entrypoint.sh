@@ -6,5 +6,11 @@ fi
 if [ "$(stat -c '%u' /workspace 2>/dev/null)" != "$(id -u)" ]; then
   sudo chown -R agent:agent /workspace 2>/dev/null || true
 fi
+if [ "$(stat -c '%u' /home/agent/.local/share/com.vercel.cli 2>/dev/null)" != "$(id -u)" ]; then
+  sudo chown -R agent:agent /home/agent/.local/share/com.vercel.cli 2>/dev/null || true
+fi
+if [ "$(stat -c '%u' /home/agent/.task-agent 2>/dev/null)" != "$(id -u)" ]; then
+  sudo chown -R agent:agent /home/agent/.task-agent 2>/dev/null || true
+fi
 
 exec "$@"

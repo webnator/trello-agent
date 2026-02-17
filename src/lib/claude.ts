@@ -12,6 +12,64 @@ export function getActiveClaudeProcesses(): Set<ChildProcess> {
   return activeProcesses;
 }
 
+export function askClaude(
+  workDir: string,
+  prompt: string,
+  timeoutMs: number = 2 * 60 * 1000
+): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: string[] = [];
+
+    const args = ["-p", prompt, "--output-format", "text", "--verbose"];
+
+    const proc = spawn("claude", args, {
+      cwd: workDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+
+    activeProcesses.add(proc);
+
+    let settled = false;
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(termTimeout);
+      clearTimeout(killTimeout);
+      activeProcesses.delete(proc);
+      resolve(chunks.join(""));
+    }
+
+    const termTimeout = setTimeout(() => {
+      proc.kill("SIGTERM");
+      chunks.push("\n[TIMEOUT] Claude process timed out");
+    }, timeoutMs);
+
+    const killTimeout = setTimeout(() => {
+      if (!settled) {
+        proc.kill("SIGKILL");
+      }
+    }, timeoutMs + 30_000);
+
+    proc.stdout.on("data", (data: Buffer) => {
+      chunks.push(data.toString());
+    });
+
+    proc.stderr.on("data", (data: Buffer) => {
+      process.stderr.write(`  [claude:err] ${data.toString()}`);
+    });
+
+    proc.on("close", () => {
+      finish();
+    });
+
+    proc.on("error", (err) => {
+      chunks.push(`Failed to spawn claude: ${err.message}`);
+      finish();
+    });
+  });
+}
+
 export function runClaude(
   workDir: string,
   prompt: string,

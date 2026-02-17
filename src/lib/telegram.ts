@@ -1,5 +1,6 @@
+import * as path from "path";
 import { Bot, InlineKeyboard } from "grammy";
-import { findListByName, getCardsInList, createCard, createBoard, addAttachment } from "./trello.js";
+import { getTasksByStatus, createTask, initTaskStore, addTaskAttachment } from "./task-store.js";
 import { createRepo } from "./github.js";
 import { structureCard } from "./structure-card.js";
 import {
@@ -14,13 +15,15 @@ import {
   setActiveProject,
   ensureActiveProject,
 } from "./session.js";
+import { askClaude } from "./claude.js";
+import { getWorkspaceDir, getRepoHttpUrl, cloneOrPullRepo } from "./local-pipeline.js";
 import type { ProjectConfig } from "../types.js";
 
 let bot: Bot | null = null;
 
 // Track chats waiting for input (conversation state)
 interface PendingState {
-  action: "task" | "newproject";
+  action: "task" | "newproject" | "ask";
   flags?: { vercel?: boolean };
 }
 const pendingInput = new Map<number, PendingState>();
@@ -39,11 +42,12 @@ async function registerCommands(bot: Bot): Promise<void> {
   try {
     await bot.api.setMyCommands([
       { command: "task", description: "Create a task in the active project" },
-      { command: "status", description: "Show cards in To Do and In Progress" },
+      { command: "status", description: "Show tasks in todo and in progress" },
       { command: "url", description: "Show production URL" },
       { command: "seturl", description: "Set production URL" },
       { command: "projects", description: "List all registered projects" },
       { command: "project", description: "Switch active project" },
+      { command: "ask", description: "Ask a question about the active project" },
       { command: "newproject", description: "Create a new project" },
       { command: "help", description: "Show available commands" },
     ]);
@@ -250,6 +254,32 @@ export async function startBot(): Promise<void> {
     }
   });
 
+  bot.command("ask", async (ctx) => {
+    const question = ctx.match?.trim() || "";
+    const chatId = ctx.chat.id;
+
+    const project = ensureActiveProject(chatId);
+    if (!project) {
+      if (!hasProjects()) {
+        await ctx.reply("No projects registered. Use /newproject <name> to create one first.");
+      } else {
+        const keyboard = buildProjectKeyboard();
+        await ctx.reply("Session expired. Please select a project:", { reply_markup: keyboard });
+      }
+      return;
+    }
+
+    if (!question) {
+      pendingInput.set(chatId, { action: "ask" });
+      await ctx.reply(`[${project.name}] What would you like to ask about the project?`, {
+        reply_markup: { force_reply: true, selective: true },
+      });
+      return;
+    }
+
+    await handleAskQuestion(chatId, question, ctx);
+  });
+
   bot.command("help", async (ctx) => {
     const chatId = ctx.chat.id;
     const activeProject = getActiveProject(chatId);
@@ -260,8 +290,9 @@ export async function startBot(): Promise<void> {
     await ctx.reply(
       "Available commands:\n" +
       "  /task <text> — Create a task in the active project\n" +
+      "  /ask <question> — Ask a question about the project code\n" +
       "  Send photo + caption — Create task with reference image\n" +
-      "  /status — Show cards in To Do and In Progress\n" +
+      "  /status — Show tasks in todo and in progress\n" +
       "  /url — Show production URL (Vercel)\n" +
       "  /seturl <url> — Set production URL\n" +
       "  /projects — List all registered projects\n" +
@@ -289,31 +320,18 @@ export async function startBot(): Promise<void> {
     }
 
     try {
-      const [todoList, inProgressList] = await Promise.all([
-        findListByName(project.trelloBoardId, "To Do"),
-        findListByName(project.trelloBoardId, "In Progress"),
-      ]);
+      const todoTasks = getTasksByStatus(project.name, "todo");
+      const inProgressTasks = getTasksByStatus(project.name, "in_progress");
 
       const lines: string[] = [`[${project.name}] Status:`];
 
-      if (todoList) {
-        const cards = await getCardsInList(todoList.id);
-        lines.push(`\nTo Do (${cards.length}):`);
-        if (cards.length === 0) lines.push("  (none)");
-        for (const c of cards) lines.push(`  - ${c.name}`);
-      }
+      lines.push(`\nTo Do (${todoTasks.length}):`);
+      if (todoTasks.length === 0) lines.push("  (none)");
+      for (const t of todoTasks) lines.push(`  - ${t.name}`);
 
-      if (inProgressList) {
-        const cards = await getCardsInList(inProgressList.id);
-        lines.push(`\nIn Progress (${cards.length}):`);
-        if (cards.length === 0) lines.push("  (none)");
-        for (const c of cards) lines.push(`  - ${c.name}`);
-      }
-
-      if (!todoList && !inProgressList) {
-        await ctx.reply(`[${project.name}] Could not find To Do or In Progress lists.`);
-        return;
-      }
+      lines.push(`\nIn Progress (${inProgressTasks.length}):`);
+      if (inProgressTasks.length === 0) lines.push("  (none)");
+      for (const t of inProgressTasks) lines.push(`  - ${t.name}`);
 
       await ctx.reply(lines.join("\n"));
     } catch (err) {
@@ -344,6 +362,8 @@ export async function startBot(): Promise<void> {
       await handleTaskCreation(chatId, text, ctx);
     } else if (pending.action === "newproject") {
       await handleNewProject(chatId, text, ctx, pending.flags);
+    } else if (pending.action === "ask") {
+      await handleAskQuestion(chatId, text, ctx);
     }
   });
 
@@ -581,12 +601,6 @@ async function handleTaskCreation(
   await ctx.reply(processingMsg);
 
   try {
-    const todoList = await findListByName(project.trelloBoardId, "To Do");
-    if (!todoList) {
-      await ctx.reply(`[${project.name}] Could not find a 'To Do' list on the board.`);
-      return;
-    }
-
     const structured = await structureCard(rawText);
 
     // Add note about attachment to description if provided
@@ -595,25 +609,71 @@ async function handleTaskCreation(
       description += `\n\n---\n**File attached:** ${attachmentName || "attachment"}`;
     }
 
-    const card = await createCard(todoList.id, structured.title, description);
+    const task = createTask(project.name, structured.title, description);
 
     // Attach file if provided
     if (attachmentUrl) {
       try {
-        await addAttachment(card.id, attachmentUrl, attachmentName || "attachment");
+        await addTaskAttachment(project.name, task.id, attachmentUrl, attachmentName || "attachment");
       } catch (attachErr) {
         console.error("Failed to attach file:", attachErr);
-        // Continue anyway, card was created
+        // Continue anyway, task was created
       }
     }
 
     const successMsg = attachmentUrl
-      ? `[${project.name}] Card created with attachment: ${card.name}\n${card.url}`
-      : `[${project.name}] Card created: ${card.name}\n${card.url}`;
+      ? `[${project.name}] Task created with attachment: ${task.name}`
+      : `[${project.name}] Task created: ${task.name}`;
     await ctx.reply(successMsg);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await ctx.reply(`[${project.name}] Failed to create card: ${msg}`);
+    await ctx.reply(`[${project.name}] Failed to create task: ${msg}`);
+  }
+}
+
+// Helper function to handle /ask questions
+async function handleAskQuestion(
+  chatId: number,
+  question: string,
+  ctx: { reply: (text: string, options?: object) => Promise<unknown> }
+): Promise<void> {
+  const project = ensureActiveProject(chatId);
+
+  if (!project) {
+    if (!hasProjects()) {
+      await ctx.reply("No projects registered. Use /newproject <name> to create one first.");
+    } else {
+      const keyboard = buildProjectKeyboard();
+      await ctx.reply("Session expired. Please select a project:", { reply_markup: keyboard });
+    }
+    return;
+  }
+
+  await ctx.reply(`[${project.name}] Thinking...`);
+
+  try {
+    const workspaceDir = getWorkspaceDir();
+    const repoDir = path.join(workspaceDir, project.githubOwner.toLowerCase(), project.githubRepo.toLowerCase(), "main");
+    const repoUrl = getRepoHttpUrl(project.githubOwner, project.githubRepo);
+
+    await cloneOrPullRepo(repoDir, repoUrl);
+
+    const answer = await askClaude(repoDir, question);
+
+    if (!answer.trim()) {
+      await ctx.reply(`[${project.name}] Claude returned an empty response.`);
+      return;
+    }
+
+    const maxLen = 4096;
+    const reply = answer.length > maxLen
+      ? answer.slice(0, maxLen - 20) + "\n\n[truncated]"
+      : answer;
+
+    await ctx.reply(`[${project.name}]\n${reply}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`[${project.name}] Failed to answer: ${msg}`);
   }
 }
 
@@ -640,8 +700,8 @@ async function handleNewProject(
   const isVercel = flags?.vercel ?? false;
 
   const creatingMsg = isVercel
-    ? `Creating Vercel/Next.js project "${name}"...\n- GitHub repo: ${org}/${name}\n- Trello board: ${name}`
-    : `Creating project "${name}"...\n- GitHub repo: ${org}/${name}\n- Trello board: ${name}`;
+    ? `Creating Vercel/Next.js project "${name}"...\n- GitHub repo: ${org}/${name}`
+    : `Creating project "${name}"...\n- GitHub repo: ${org}/${name}`;
   await ctx.reply(creatingMsg);
 
   try {
@@ -649,14 +709,12 @@ async function handleNewProject(
     await createRepo(org, name);
     await ctx.reply(`GitHub repo created: https://github.com/${org}/${name}`);
 
-    // 2. Create Trello board
-    const board = await createBoard(name);
-    await ctx.reply(`Trello board created: ${board.url}`);
+    // 2. Initialize task store
+    initTaskStore(name);
 
     // 3. Register project in registry
     const config: ProjectConfig = {
       name,
-      trelloBoardId: board.id,
       githubOwner: org,
       githubRepo: name,
       createdAt: new Date().toISOString(),
@@ -666,11 +724,9 @@ async function handleNewProject(
     // 4. Auto-switch to new project
     setActiveProject(chatId, name);
 
-    // 5. If Vercel flag, create initial scaffolding card
+    // 5. If Vercel flag, create initial scaffolding task
     if (isVercel) {
-      const todoList = await findListByName(board.id, "To Do");
-      if (todoList) {
-        const scaffoldDesc = `## Objective
+      const scaffoldDesc = `## Objective
 Create a modern Next.js 14+ landing page and deploy it to Vercel.
 
 ## Requirements
@@ -685,37 +741,50 @@ Run: \`npx create-next-app@latest . --typescript --tailwind --eslint --app --src
 - Hero section on the home page
 - Use App Router (not Pages Router)
 
-### 3. Deploy to Vercel
-Run: \`vercel link\` to connect this repo to a new Vercel project.
-Then run: \`vercel --prod\` to deploy to production.
+### 3. Deploy to Vercel and connect GitHub repo
+\`$VERCEL_TOKEN\` is set in the environment. The Vercel team ID is \`team_aVipwBHnAR8J6DBO7d32ZSRB\`. Follow these steps EXACTLY:
+
+**Step 3a: Deploy to Vercel**
+\`\`\`
+vercel --prod --token $VERCEL_TOKEN --yes --scope team_aVipwBHnAR8J6DBO7d32ZSRB
+\`\`\`
+This creates the Vercel project and deploys. Note the production URL from the output.
+
+**Step 3b: Connect GitHub repo for auto-deploy on push**
+Use the Vercel API (NOT the CLI) to link the GitHub repo. The endpoint is \`POST /v9/projects/{project-name}/link\`:
+\`\`\`
+curl -s -X POST "https://api.vercel.com/v9/projects/${name}/link?teamId=team_aVipwBHnAR8J6DBO7d32ZSRB" \\
+  -H "Authorization: Bearer $VERCEL_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"type":"github","repo":"${org}/${name}"}'
+\`\`\`
+Verify the response JSON contains a \`"link"\` object with \`"type":"github"\` and \`"repo":"${name}"\`.
 
 ### 4. Save production URL
-After deploying, extract the production URL from the vercel output and save it to the projects config:
-Edit \`~/.trello-agent/projects.json\` and add a \`vercelUrl\` field to the "${name}" project with the production URL (e.g., "https://${name}-xxx.vercel.app").
+Edit \`~/.task-agent/projects.json\` and add a \`vercelUrl\` field to the "${name}" project with the production URL (e.g., "https://${name}.vercel.app").
 
 ### 5. Verify
 - \`npm run build\` succeeds
-- \`npm run dev\` starts the dev server
-- Home page renders correctly
 - Production URL is accessible
 
 ## Notes
-This is an automated scaffold task. Keep it minimal and clean. The Vercel CLI is already configured locally.`;
+- NEVER use interactive commands — always pass \`--yes\` and \`--token $VERCEL_TOKEN\`
+- ALWAYS pass \`--scope team_aVipwBHnAR8J6DBO7d32ZSRB\` when using the Vercel CLI
+- ALWAYS pass \`?teamId=team_aVipwBHnAR8J6DBO7d32ZSRB\` when calling the Vercel API
+- Do NOT use \`vercel link\` — it does not work in non-interactive mode
+- Do NOT use \`PATCH /v9/projects\` with \`gitRepository\` — that field does not exist. Use \`POST /v9/projects/{name}/link\` instead.`;
 
-        await createCard(todoList.id, "Scaffold Next.js landing page + deploy to Vercel", scaffoldDesc);
-        await ctx.reply(`Scaffolding card created. The agent will set up Next.js and Vercel.`);
-      }
+      createTask(name, "Scaffold Next.js landing page + deploy to Vercel", scaffoldDesc);
+      await ctx.reply(`Scaffolding task created. The agent will set up Next.js and Vercel.`);
     }
 
     const successMsg = isVercel
       ? `Project "${name}" created successfully!\n\n` +
         `- GitHub: https://github.com/${org}/${name}\n` +
-        `- Trello: ${board.url}\n` +
         `\nSwitched to ${name}. A scaffolding task has been created.`
       : `Project "${name}" created successfully!\n\n` +
-        `- GitHub: https://github.com/${org}/${name}\n` +
-        `- Trello: ${board.url}\n\n` +
-        `Switched to ${name}. Use /task to create cards.`;
+        `- GitHub: https://github.com/${org}/${name}\n\n` +
+        `Switched to ${name}. Use /task to create tasks.`;
 
     await ctx.reply(successMsg);
   } catch (err) {

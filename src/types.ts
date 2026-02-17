@@ -1,52 +1,51 @@
-// --- Trello Types ---
+// --- Task Types ---
 
-export interface TrelloAttachment {
+export type TaskStatus = "todo" | "in_progress" | "done" | "failed";
+
+export interface TaskAttachment {
   id: string;
   name: string;
-  url: string;
+  filePath: string;
   mimeType?: string;
+  createdAt: string;
 }
 
-export interface TrelloCard {
+export interface TaskComment {
+  id: string;
+  text: string;
+  createdAt: string;
+  source: "system" | "user";
+}
+
+export interface TaskChecklist {
   id: string;
   name: string;
-  desc: string;
-  shortLink: string;
-  idList: string;
-  url: string;
-  checklists?: TrelloChecklist[];
-  attachments?: TrelloAttachment[];
+  checkItems: TaskCheckItem[];
 }
 
-export interface TrelloChecklist {
-  id: string;
-  name: string;
-  checkItems: TrelloCheckItem[];
-}
-
-export interface TrelloCheckItem {
+export interface TaskCheckItem {
   id: string;
   name: string;
   state: "complete" | "incomplete";
 }
 
-export interface TrelloList {
+export interface Task {
   id: string;
+  shortLink: string;
   name: string;
+  desc: string;
+  status: TaskStatus;
+  checklists: TaskChecklist[];
+  attachments: TaskAttachment[];
+  comments: TaskComment[];
+  createdAt: string;
+  updatedAt: string;
 }
 
-export interface TrelloWebhookPayload {
-  action: {
-    type: string;
-    data: {
-      card?: { id: string; name: string; shortLink: string };
-      list?: { id: string; name: string };
-      listAfter?: { id: string; name: string };
-      listBefore?: { id: string; name: string };
-      board?: { id: string; name: string };
-    };
-    memberCreator?: { fullName: string };
-  };
+export interface TaskStore {
+  projectName: string;
+  tasks: Task[];
+  nextSequence: number;
 }
 
 // --- GitHub Types ---
@@ -70,7 +69,6 @@ export interface PipelineResult {
 
 export interface ProjectConfig {
   name: string;
-  trelloBoardId: string;
   githubOwner: string;
   githubRepo: string;
   createdAt: string;
@@ -79,5 +77,4 @@ export interface ProjectConfig {
 
 export interface ProjectRegistry {
   projects: Record<string, ProjectConfig>;
-  defaultProject?: string;
 }

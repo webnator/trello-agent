@@ -1,5 +1,5 @@
 {
-  "name": "trello-agent",
+  "name": "task-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",

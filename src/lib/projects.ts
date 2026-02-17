@@ -7,7 +7,7 @@ function getProjectsFilePath(): string {
     return process.env.PROJECTS_FILE;
   }
   const home = process.env.HOME || "/root";
-  return path.join(home, ".trello-agent", "projects.json");
+  return path.join(home, ".task-agent", "projects.json");
 }
 
 let cachedRegistry: ProjectRegistry | null = null;
@@ -60,22 +60,7 @@ export function addProject(config: ProjectConfig): void {
   const registry = loadRegistry();
   registry.projects[config.name] = config;
 
-  // Set as default if it's the first project
-  if (Object.keys(registry.projects).length === 1) {
-    registry.defaultProject = config.name;
-  }
-
   saveRegistry(registry);
-}
-
-export function getDefaultProject(): ProjectConfig | undefined {
-  const registry = loadRegistry();
-  if (registry.defaultProject) {
-    return registry.projects[registry.defaultProject];
-  }
-  // Fall back to first project if no default set
-  const projects = Object.values(registry.projects);
-  return projects.length > 0 ? projects[0] : undefined;
 }
 
 export function hasProjects(): boolean {

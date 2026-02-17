@@ -1,19 +1,23 @@
 import { describe, it, expect } from "vitest";
-import type { TrelloCard } from "../src/types.js";
+import type { Task } from "../src/types.js";
 import { buildPrompt, slugify } from "../src/lib/local-pipeline.js";
 
 describe("local-pipeline prompt building", () => {
-  const baseCard: TrelloCard = {
-    id: "card123",
+  const baseTask: Task = {
+    id: "abc123",
+    shortLink: "abc123",
     name: "Add login page",
     desc: "Create a login page with email and password fields",
-    shortLink: "abc123",
-    idList: "list1",
-    url: "https://trello.com/c/abc123",
+    status: "todo",
+    checklists: [],
+    attachments: [],
+    comments: [],
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
   };
 
-  it("builds a basic prompt from card name and description", () => {
-    const prompt = buildPrompt(baseCard);
+  it("builds a basic prompt from task name and description", () => {
+    const prompt = buildPrompt(baseTask);
 
     expect(prompt).toContain("## Task: Add login page");
     expect(prompt).toContain("Create a login page with email and password fields");
@@ -23,8 +27,8 @@ describe("local-pipeline prompt building", () => {
   });
 
   it("includes checklists as requirements", () => {
-    const card: TrelloCard = {
-      ...baseCard,
+    const task: Task = {
+      ...baseTask,
       checklists: [
         {
           id: "cl1",
@@ -38,7 +42,7 @@ describe("local-pipeline prompt building", () => {
       ],
     };
 
-    const prompt = buildPrompt(card);
+    const prompt = buildPrompt(task);
 
     expect(prompt).toContain("## Requirements");
     expect(prompt).toContain("### Acceptance Criteria");
@@ -48,23 +52,23 @@ describe("local-pipeline prompt building", () => {
   });
 
   it("appends failure context on retry", () => {
-    const prompt = buildPrompt(baseCard, "CI failed: test suite returned exit code 1\nnpm test failed");
+    const prompt = buildPrompt(baseTask, "CI failed: test suite returned exit code 1\nnpm test failed");
 
     expect(prompt).toContain("## Previous attempt failed");
     expect(prompt).toContain("CI failed: test suite returned exit code 1");
     expect(prompt).toContain("Fix the issues described above");
   });
 
-  it("handles card with no description", () => {
-    const card: TrelloCard = { ...baseCard, desc: "" };
-    const prompt = buildPrompt(card);
+  it("handles task with no description", () => {
+    const task: Task = { ...baseTask, desc: "" };
+    const prompt = buildPrompt(task);
 
     expect(prompt).toContain("No description provided.");
   });
 
   it("handles multiple checklists", () => {
-    const card: TrelloCard = {
-      ...baseCard,
+    const task: Task = {
+      ...baseTask,
       checklists: [
         {
           id: "cl1",
@@ -79,7 +83,7 @@ describe("local-pipeline prompt building", () => {
       ],
     };
 
-    const prompt = buildPrompt(card);
+    const prompt = buildPrompt(task);
 
     expect(prompt).toContain("### Frontend");
     expect(prompt).toContain("### Backend");

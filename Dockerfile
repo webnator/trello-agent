@@ -45,8 +45,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
 ENV PATH="/home/agent/.local/bin:/home/agent/.bun/bin:${PATH}"
 
 # Set git identity for automated commits
-RUN git config --global user.name "Trello Agent" && \
-    git config --global user.email "trello-agent@noreply.local"
+RUN git config --global user.name "Task Agent" && \
+    git config --global user.email "task-agent@noreply.local"
 
 WORKDIR /app
 

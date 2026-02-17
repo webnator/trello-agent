@@ -5,7 +5,7 @@ export interface StructuredCard {
   description: string;
 }
 
-const SYSTEM_PROMPT = `You are a Trello card writer. The user will give you a free-form task description. You must respond with ONLY a JSON object (no markdown fences, no extra text) with exactly two fields:
+const SYSTEM_PROMPT = `You are a task writer. The user will give you a free-form task description. You must respond with ONLY a JSON object (no markdown fences, no extra text) with exactly two fields:
 
 {
   "title": "Short imperative card title (max 80 chars)",

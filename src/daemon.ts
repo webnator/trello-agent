@@ -4,10 +4,10 @@ import { startBot, stopBot } from "./lib/telegram.js";
 import { loadRegistry, getAllProjects } from "./lib/projects.js";
 import { getActiveClaudeProcesses } from "./lib/claude.js";
 
-console.log("Trello Agent Daemon starting...");
+console.log("Task Agent Daemon starting...");
 
 // Validate required env vars (API credentials only - per-project settings come from registry)
-const required = ["TRELLO_API_KEY", "TRELLO_TOKEN", "GITHUB_TOKEN"];
+const required = ["GITHUB_TOKEN"];
 const missing = required.filter((k) => !process.env[k]);
 if (missing.length > 0) {
   console.error(`Missing required env vars: ${missing.join(", ")}`);
@@ -20,18 +20,15 @@ const projects = getAllProjects();
 
 if (projects.length === 0) {
   console.warn("No projects configured. Use /newproject from Telegram to create one.");
-  console.warn("Or create ~/.trello-agent/projects.json manually.");
+  console.warn("Or create ~/.task-agent/projects.json manually.");
 } else {
   console.log(`Loaded ${projects.length} project(s):`);
   for (const p of projects) {
-    console.log(`  - ${p.name}: ${p.githubOwner}/${p.githubRepo} (board: ${p.trelloBoardId})`);
-  }
-  if (registry.defaultProject) {
-    console.log(`Default project: ${registry.defaultProject}`);
+    console.log(`  - ${p.name}: ${p.githubOwner}/${p.githubRepo}`);
   }
 }
 
-console.log(`Workspace: ${process.env.WORKSPACE_DIR || "~/workspace/trello-agent-projects"}`);
+console.log(`Workspace: ${process.env.WORKSPACE_DIR || "~/workspace/task-agent-projects"}`);
 console.log("");
 
 // Uncaught exception handlers

@@ -1,26 +1,26 @@
 import * as fs from "fs";
-import { getCardsInList, findListByName, getCard } from "./trello.js";
+import { getTasksByStatus, getTask } from "./task-store.js";
 import { runLocalPipeline } from "./local-pipeline.js";
 import { getAllProjects } from "./projects.js";
 import type { ProjectConfig } from "../types.js";
 
 const MAX_CONCURRENT = 3;
 
-interface CardState {
+interface TaskState {
   attempt: number;
   inFlight: boolean;
   lastError?: string;
   lastFailedAt?: number;
 }
 
-// Card states keyed by "projectName:cardId" to avoid collisions across projects
-const cardStates = new Map<string, CardState>();
+// Task states keyed by "projectName:taskId" to avoid collisions across projects
+const taskStates = new Map<string, TaskState>();
 let pollTimeout: ReturnType<typeof setTimeout> | null = null;
 let shuttingDown = false;
 let pollCycleCount = 0;
 
-function cardKey(projectName: string, cardId: string): string {
-  return `${projectName}:${cardId}`;
+function taskKey(projectName: string, taskId: string): string {
+  return `${projectName}:${taskId}`;
 }
 
 export function stopPolling(): void {
@@ -57,7 +57,7 @@ async function checkAllProjects(): Promise<void> {
 
   // Touch health check file for Docker
   try {
-    fs.writeFileSync("/tmp/trello-agent-alive", String(Date.now()));
+    fs.writeFileSync("/tmp/task-agent-alive", String(Date.now()));
   } catch {
     // Non-fatal if /tmp isn't writable
   }
@@ -73,7 +73,7 @@ async function checkAllProjects(): Promise<void> {
     if (shuttingDown) break;
 
     try {
-      await checkProjectForCards(project);
+      await checkProjectForTasks(project);
     } catch (err) {
       // Log error but continue with other projects
       console.error(`Error polling project "${project.name}":`, err);
@@ -81,50 +81,42 @@ async function checkAllProjects(): Promise<void> {
   }
 }
 
-async function checkProjectForCards(project: ProjectConfig): Promise<void> {
-  const { name: projectName, trelloBoardId: boardId } = project;
+async function checkProjectForTasks(project: ProjectConfig): Promise<void> {
+  const { name: projectName } = project;
 
-  // Find list IDs
-  const todoList = await findListByName(boardId, "To Do");
-  const inProgressList = await findListByName(boardId, "In Progress");
+  // Fetch tasks by status
+  const todoTasks = getTasksByStatus(projectName, "todo");
+  const inProgressTasks = getTasksByStatus(projectName, "in_progress");
 
-  if (!todoList && !inProgressList) {
-    return;
-  }
-
-  // Fetch cards from both lists
-  const todoCards = todoList ? await getCardsInList(todoList.id) : [];
-  const inProgressCards = inProgressList ? await getCardsInList(inProgressList.id) : [];
-
-  if (todoCards.length === 0 && inProgressCards.length === 0) {
+  if (todoTasks.length === 0 && inProgressTasks.length === 0) {
     return; // Nothing to do
   }
 
-  // Collect all current card IDs for cleanup
-  const currentCardKeys = new Set<string>();
+  // Collect all current task IDs for cleanup
+  const currentTaskKeys = new Set<string>();
 
-  const allCards = [
-    ...todoCards.map((c) => ({ card: c, isRetry: false })),
-    ...inProgressCards.map((c) => ({ card: c, isRetry: true })),
+  const allTasks = [
+    ...todoTasks.map((t) => ({ task: t, isRetry: false })),
+    ...inProgressTasks.map((t) => ({ task: t, isRetry: true })),
   ];
 
-  for (const { card } of allCards) {
-    currentCardKeys.add(cardKey(projectName, card.id));
+  for (const { task } of allTasks) {
+    currentTaskKeys.add(taskKey(projectName, task.id));
   }
 
-  // Clean up cardStates for cards no longer on the board
-  for (const key of cardStates.keys()) {
-    if (key.startsWith(`${projectName}:`) && !currentCardKeys.has(key)) {
-      const state = cardStates.get(key);
+  // Clean up taskStates for tasks no longer active
+  for (const key of taskStates.keys()) {
+    if (key.startsWith(`${projectName}:`) && !currentTaskKeys.has(key)) {
+      const state = taskStates.get(key);
       if (state && !state.inFlight) {
-        cardStates.delete(key);
+        taskStates.delete(key);
       }
     }
   }
 
-  const actionable = allCards.filter((c) => {
-    const key = cardKey(projectName, c.card.id);
-    const state = cardStates.get(key);
+  const actionable = allTasks.filter((t) => {
+    const key = taskKey(projectName, t.task.id);
+    const state = taskStates.get(key);
     if (!state) return true;
     if (state.inFlight) return false;
 
@@ -141,14 +133,14 @@ async function checkProjectForCards(project: ProjectConfig): Promise<void> {
   });
 
   if (actionable.length === 0) {
-    return; // All cards already being processed or in backoff, stay quiet
+    return; // All tasks already being processed or in backoff, stay quiet
   }
 
   console.log(
-    `[${projectName}] Found ${todoCards.length} To-Do card(s), ${inProgressCards.length} In-Progress card(s) (${actionable.length} actionable)`
+    `[${projectName}] Found ${todoTasks.length} todo task(s), ${inProgressTasks.length} in-progress task(s) (${actionable.length} actionable)`
   );
 
-  // Process actionable cards with concurrency limit
+  // Process actionable tasks with concurrency limit
   const queue = [...actionable];
   const running: Promise<void>[] = [];
 
@@ -156,7 +148,7 @@ async function checkProjectForCards(project: ProjectConfig): Promise<void> {
     // Fill up to MAX_CONCURRENT slots
     while (queue.length > 0 && running.length < MAX_CONCURRENT) {
       const item = queue.shift()!;
-      const promise = processCard(project, item.card, item.isRetry).then(() => {
+      const promise = processTask(project, item.task.id, item.task.name, item.isRetry).then(() => {
         running.splice(running.indexOf(promise), 1);
       });
       running.push(promise);
@@ -169,20 +161,21 @@ async function checkProjectForCards(project: ProjectConfig): Promise<void> {
   }
 }
 
-async function processCard(
+async function processTask(
   project: ProjectConfig,
-  card: { id: string; name: string },
+  taskId: string,
+  taskName: string,
   isRetry: boolean
 ): Promise<void> {
   if (shuttingDown) return;
 
   const { name: projectName } = project;
-  const key = cardKey(projectName, card.id);
-  let state = cardStates.get(key);
+  const key = taskKey(projectName, taskId);
+  let state = taskStates.get(key);
 
   if (!state) {
     state = { attempt: 0, inFlight: false };
-    cardStates.set(key, state);
+    taskStates.set(key, state);
   }
 
   // Skip if already being processed
@@ -192,7 +185,7 @@ async function processCard(
 
   // For retries, only process if it was a previous failure (has attempt > 0)
   if (isRetry && state.attempt === 0) {
-    // This card was moved to In Progress by another process or manually.
+    // This task was moved to in_progress by another process or manually.
     // Treat it as a new task.
     state.attempt = 0;
   }
@@ -201,34 +194,39 @@ async function processCard(
   state.inFlight = true;
 
   console.log(
-    `\n[${projectName}] Processing card: "${card.name}" (${isRetry ? "retry" : "new"}, attempt ${state.attempt})`
+    `\n[${projectName}] Processing task: "${taskName}" (${isRetry ? "retry" : "new"}, attempt ${state.attempt})`
   );
 
   try {
-    // Fetch full card details (with checklists)
-    const fullCard = await getCard(card.id);
+    // Fetch full task details
+    const fullTask = getTask(projectName, taskId);
+    if (!fullTask) {
+      console.error(`[${projectName}] Task "${taskName}" (${taskId}) not found in store`);
+      taskStates.delete(key);
+      return;
+    }
 
     const result = await runLocalPipeline(
       project,
-      fullCard,
+      fullTask,
       state.attempt,
       state.lastError
     );
 
     if (result.success) {
       // Clean up state on success
-      cardStates.delete(key);
-      console.log(`[${projectName}] Card "${card.name}" completed successfully!`);
+      taskStates.delete(key);
+      console.log(`[${projectName}] Task "${taskName}" completed successfully!`);
     } else {
       state.lastError = result.error;
       state.lastFailedAt = pollCycleCount;
-      console.log(`[${projectName}] Card "${card.name}" failed (attempt ${state.attempt}): ${result.error?.slice(0, 200)}`);
+      console.log(`[${projectName}] Task "${taskName}" failed (attempt ${state.attempt}): ${result.error?.slice(0, 200)}`);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     state.lastError = message;
     state.lastFailedAt = pollCycleCount;
-    console.error(`[${projectName}] Card "${card.name}" threw: ${message}`);
+    console.error(`[${projectName}] Task "${taskName}" threw: ${message}`);
   } finally {
     state.inFlight = false;
   }

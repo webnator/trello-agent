@@ -2,8 +2,8 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
-import type { TrelloCard, PipelineResult, ProjectConfig } from "../types.js";
-import { moveCard, addComment, findListByName } from "./trello.js";
+import type { Task, PipelineResult, ProjectConfig } from "../types.js";
+import { updateTaskStatus, addTaskComment, getAttachmentPaths } from "./task-store.js";
 import {
   ensureRepoExists,
   createPullRequest,
@@ -29,12 +29,12 @@ export function slugify(text: string): string {
     .slice(0, 40);
 }
 
-function getWorkspaceDir(): string {
-  const dir = process.env.WORKSPACE_DIR || "~/workspace/trello-agent-projects";
+export function getWorkspaceDir(): string {
+  const dir = process.env.WORKSPACE_DIR || "~/workspace/task-agent-projects";
   return dir.replace(/^~/, process.env.HOME || "/root");
 }
 
-function getRepoHttpUrl(owner: string, repo: string): string {
+export function getRepoHttpUrl(owner: string, repo: string): string {
   return `https://github.com/${owner}/${repo}.git`;
 }
 
@@ -82,10 +82,10 @@ async function gitExec(cmd: string, cwd?: string): Promise<string> {
   return exec(cmd, cwd, gitEnv());
 }
 
-export function buildPrompt(card: TrelloCard, failureContext?: string, attachmentPaths?: string[]): string {
+export function buildPrompt(task: Task, failureContext?: string, attachmentPaths?: string[]): string {
   const checklistText =
-    card.checklists && card.checklists.length > 0
-      ? card.checklists
+    task.checklists && task.checklists.length > 0
+      ? task.checklists
           .map(
             (cl) =>
               `### ${cl.name}\n${cl.checkItems.map((i) => `- [${i.state === "complete" ? "x" : " "}] ${i.name}`).join("\n")}`
@@ -95,10 +95,10 @@ export function buildPrompt(card: TrelloCard, failureContext?: string, attachmen
 
   let prompt = `You are working in a GitHub repo. Complete the task below. Read the existing code first to understand the project, then implement what's needed.
 
-## Task: ${card.name}
+## Task: ${task.name}
 
 ## Description
-${card.desc || "No description provided."}
+${task.desc || "No description provided."}
 `;
 
   if (attachmentPaths && attachmentPaths.length > 0) {
@@ -132,39 +132,7 @@ Fix the issues described above and make sure everything works.
   return prompt;
 }
 
-async function downloadAttachments(card: TrelloCard, repoDir: string): Promise<string[]> {
-  if (!card.attachments || card.attachments.length === 0) {
-    return [];
-  }
-
-  const attachmentsDir = path.join(repoDir, ".trello-attachments");
-  if (!fs.existsSync(attachmentsDir)) {
-    fs.mkdirSync(attachmentsDir, { recursive: true });
-  }
-
-  const downloadedPaths: string[] = [];
-
-  for (const attachment of card.attachments) {
-    try {
-      const response = await fetch(attachment.url);
-      if (!response.ok) continue;
-
-      const buffer = await response.arrayBuffer();
-      const filename = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const filePath = path.join(attachmentsDir, filename);
-
-      fs.writeFileSync(filePath, Buffer.from(buffer));
-      downloadedPaths.push(filePath);
-      console.log(`  Downloaded attachment: ${filename}`);
-    } catch (err) {
-      console.error(`  Failed to download attachment ${attachment.name}:`, err);
-    }
-  }
-
-  return downloadedPaths;
-}
-
-async function cloneOrPullRepo(repoDir: string, repoUrl: string): Promise<void> {
+export async function cloneOrPullRepo(repoDir: string, repoUrl: string): Promise<void> {
   if (fs.existsSync(path.join(repoDir, ".git"))) {
     console.log(`  Pulling latest in ${repoDir}`);
     await gitExec("git fetch origin", repoDir);
@@ -247,31 +215,30 @@ async function pollCI(
 
 export async function runLocalPipeline(
   project: ProjectConfig,
-  card: TrelloCard,
+  task: Task,
   attempt: number,
   failureContext?: string
 ): Promise<PipelineResult> {
-  const { name: projectName, trelloBoardId: boardId, githubOwner: owner, githubRepo: repo } = project;
+  const { name: projectName, githubOwner: owner, githubRepo: repo } = project;
 
   // Branch naming includes project name to avoid collisions
-  const branchName = `trello/${projectName}/${card.shortLink}-${slugify(card.name)}`;
+  const branchName = `task/${projectName}/${task.shortLink}-${slugify(task.name)}`;
   const workspaceDir = getWorkspaceDir();
-  // Workspace directory includes owner/repo to avoid collisions
-  const repoDir = path.join(workspaceDir, owner, repo, card.shortLink);
+  // Workspace directory includes owner/repo to avoid collisions (lowercased to avoid npm issues)
+  const repoDir = path.join(workspaceDir, owner.toLowerCase(), repo.toLowerCase(), task.shortLink.toLowerCase());
   const isRetry = attempt > 1;
 
   console.log(`\n[${"=".repeat(60)}]`);
   console.log(`Project: ${projectName}`);
-  console.log(`Card: ${card.name}`);
+  console.log(`Task: ${task.name}`);
   console.log(`Attempt: ${attempt}/${MAX_RETRIES}`);
   console.log(`Branch: ${branchName}`);
 
   try {
-    // 1. Move card to "In Progress" (if not already)
-    const inProgressList = await findListByName(boardId, "In Progress");
-    if (inProgressList && card.idList !== inProgressList.id) {
-      await moveCard(card.id, inProgressList.id);
-      console.log("  Moved card to In Progress");
+    // 1. Move task to "in_progress" (if not already)
+    if (task.status !== "in_progress") {
+      updateTaskStatus(projectName, task.id, "in_progress");
+      console.log("  Moved task to in_progress");
     }
 
     // 2. Ensure GitHub repo exists
@@ -287,14 +254,14 @@ export async function runLocalPipeline(
     await createOrCheckoutBranch(repoDir, branchName, isRetry);
     console.log(`  On branch ${branchName}`);
 
-    // 5. Download attachments (reference images, etc.)
-    const attachmentPaths = await downloadAttachments(card, repoDir);
+    // 5. Resolve attachment paths (already downloaded locally)
+    const attachmentPaths = getAttachmentPaths(task);
     if (attachmentPaths.length > 0) {
-      console.log(`  Downloaded ${attachmentPaths.length} attachment(s)`);
+      console.log(`  ${attachmentPaths.length} attachment(s) available`);
     }
 
     // 6. Build prompt
-    const prompt = buildPrompt(card, failureContext, attachmentPaths);
+    const prompt = buildPrompt(task, failureContext, attachmentPaths);
     console.log("  Spawning Claude Code...");
 
     // 7. Run Claude Code CLI
@@ -305,14 +272,15 @@ export async function runLocalPipeline(
       console.error(`  Claude failed (exit ${claudeResult.exitCode})`);
 
       if (attempt >= MAX_RETRIES) {
-        return await handleMaxRetries(project, card, errorMsg);
+        return await handleMaxRetries(project, task, errorMsg);
       }
 
-      await addComment(
-        card.id,
+      addTaskComment(
+        projectName,
+        task.id,
         `Attempt ${attempt}/${MAX_RETRIES} failed (Claude error):\n\n\`\`\`\n${errorMsg.slice(0, 3000)}\n\`\`\``
       );
-      await notifyFailure(projectName, card.name, errorMsg, attempt, MAX_RETRIES);
+      await notifyFailure(projectName, task.name, errorMsg, attempt, MAX_RETRIES);
       return { success: false, error: errorMsg };
     }
 
@@ -333,14 +301,15 @@ export async function runLocalPipeline(
       console.error(`  ${errorMsg}`);
 
       if (attempt >= MAX_RETRIES) {
-        return await handleMaxRetries(project, card, errorMsg);
+        return await handleMaxRetries(project, task, errorMsg);
       }
 
-      await addComment(
-        card.id,
+      addTaskComment(
+        projectName,
+        task.id,
         `Attempt ${attempt}/${MAX_RETRIES} failed (rebase conflict):\n\n${errorMsg}`
       );
-      await notifyFailure(projectName, card.name, errorMsg, attempt, MAX_RETRIES);
+      await notifyFailure(projectName, task.name, errorMsg, attempt, MAX_RETRIES);
       return { success: false, error: errorMsg };
     }
 
@@ -353,7 +322,7 @@ export async function runLocalPipeline(
       if (status) {
         // There are uncommitted changes - Claude didn't commit
         await gitExec("git add -A", repoDir);
-        await gitExec('git commit -m "feat: implement task from Trello card"', repoDir);
+        await gitExec('git commit -m "feat: implement task"', repoDir);
         await gitExec(`git push origin ${branchName} --force`, repoDir);
       } else {
         // No changes at all - check if branch has commits ahead of main
@@ -363,10 +332,10 @@ export async function runLocalPipeline(
             const errorMsg = "Claude completed but made no changes to the code.";
             console.error(`  ${errorMsg}`);
             if (attempt >= MAX_RETRIES) {
-              return await handleMaxRetries(project, card, errorMsg);
+              return await handleMaxRetries(project, task, errorMsg);
             }
-            await addComment(card.id, `Attempt ${attempt}/${MAX_RETRIES}: ${errorMsg}`);
-            await notifyFailure(projectName, card.name, errorMsg, attempt, MAX_RETRIES);
+            addTaskComment(projectName, task.id, `Attempt ${attempt}/${MAX_RETRIES}: ${errorMsg}`);
+            await notifyFailure(projectName, task.name, errorMsg, attempt, MAX_RETRIES);
             return { success: false, error: errorMsg };
           }
           // Has commits, push should work
@@ -384,20 +353,20 @@ export async function runLocalPipeline(
 
     try {
       const prBody = [
-        `## Trello Card`,
-        `[${card.name}](${card.url})`,
+        `## Task`,
+        `**${task.name}**`,
         ``,
         `## Description`,
-        card.desc || "_No description provided._",
+        task.desc || "_No description provided._",
         ``,
         `---`,
-        `_Automated by Trello Agent (local daemon)_`,
+        `_Automated by Task Agent_`,
         ``,
-        `trello-project: ${projectName}`,
-        `trello-card-id: ${card.id}`,
+        `task-project: ${projectName}`,
+        `task-id: ${task.id}`,
       ].join("\n");
 
-      const pr = await createPullRequest(owner, repo, branchName, card.name, prBody);
+      const pr = await createPullRequest(owner, repo, branchName, task.name, prBody);
       prNumber = pr.number;
       prUrl = pr.html_url;
       console.log(`  PR created: ${prUrl}`);
@@ -425,14 +394,15 @@ export async function runLocalPipeline(
       console.error(`  CI failed`);
 
       if (attempt >= MAX_RETRIES) {
-        return await handleMaxRetries(project, card, errorMsg);
+        return await handleMaxRetries(project, task, errorMsg);
       }
 
-      await addComment(
-        card.id,
+      addTaskComment(
+        projectName,
+        task.id,
         `Attempt ${attempt}/${MAX_RETRIES} failed (CI):\n\n${ci.details}`
       );
-      await notifyFailure(projectName, card.name, errorMsg, attempt, MAX_RETRIES);
+      await notifyFailure(projectName, task.name, errorMsg, attempt, MAX_RETRIES);
       return { success: false, error: errorMsg };
     }
 
@@ -442,18 +412,16 @@ export async function runLocalPipeline(
     await mergePullRequest(owner, repo, prNumber);
     console.log("  PR merged!");
 
-    // 13. Move card to "Done"
-    const doneList = await findListByName(boardId, "Done");
-    if (doneList) {
-      await moveCard(card.id, doneList.id);
-    }
+    // 13. Move task to "done"
+    updateTaskStatus(projectName, task.id, "done");
 
-    await addComment(
-      card.id,
+    addTaskComment(
+      projectName,
+      task.id,
       `Task completed! PR merged: ${prUrl}`
     );
 
-    console.log("  Card moved to Done");
+    console.log("  Task moved to done");
 
     // 14. Cleanup workspace directory
     try {
@@ -463,7 +431,7 @@ export async function runLocalPipeline(
       console.warn(`  Failed to clean up workspace: ${repoDir}`);
     }
 
-    await notifySuccess(projectName, card.name, prUrl);
+    await notifySuccess(projectName, task.name, prUrl);
     return { success: true, prUrl };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -471,44 +439,43 @@ export async function runLocalPipeline(
     console.error(`  Pipeline error: ${redacted}`);
 
     if (attempt >= MAX_RETRIES) {
-      return await handleMaxRetries(project, card, redacted);
+      return await handleMaxRetries(project, task, redacted);
     }
 
     try {
-      await addComment(
-        card.id,
+      addTaskComment(
+        projectName,
+        task.id,
         `Attempt ${attempt}/${MAX_RETRIES} failed:\n\n\`\`\`\n${redacted.slice(0, 3000)}\n\`\`\``
       );
     } catch {
-      console.error("  Failed to comment on Trello card");
+      console.error("  Failed to add comment to task");
     }
 
-    await notifyFailure(projectName, card.name, redacted, attempt, MAX_RETRIES);
+    await notifyFailure(projectName, task.name, redacted, attempt, MAX_RETRIES);
     return { success: false, error: redacted };
   }
 }
 
 async function handleMaxRetries(
   project: ProjectConfig,
-  card: TrelloCard,
+  task: Task,
   lastError: string
 ): Promise<PipelineResult> {
-  const { name: projectName, trelloBoardId: boardId } = project;
+  const { name: projectName } = project;
 
-  console.error(`  Max retries (${MAX_RETRIES}) reached. Moving to Failed.`);
-  await notifyMaxRetries(projectName, card.name);
+  console.error(`  Max retries (${MAX_RETRIES}) reached. Moving to failed.`);
+  await notifyMaxRetries(projectName, task.name);
 
   try {
-    const failedList = await findListByName(boardId, "Failed");
-    if (failedList) {
-      await moveCard(card.id, failedList.id);
-    }
-    await addComment(
-      card.id,
+    updateTaskStatus(projectName, task.id, "failed");
+    addTaskComment(
+      projectName,
+      task.id,
       `Task failed after ${MAX_RETRIES} attempts. Last error:\n\n\`\`\`\n${lastError.slice(0, 3000)}\n\`\`\``
     );
   } catch {
-    console.error("  Failed to update Trello card after max retries");
+    console.error("  Failed to update task after max retries");
   }
 
   return { success: false, error: `Max retries exceeded. Last: ${lastError}` };
