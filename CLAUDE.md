@@ -45,44 +45,11 @@ npm test           # vitest run
 
 ## Deployment
 
-The app runs on a Hetzner server (`root@46.225.141.53`) at `/opt/task-agent` via Docker Compose.
+Configure your own isolated host and credentials. No hosted service is provided.
+See README.md for setup and the existing pipeline's automatic execution/merge behavior.
+Do not deploy as part of repository inspection or tests.
 
-### Deploy changes
-
-```bash
-# From the project root on your local machine:
-rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='.env' --exclude='.vercel' ./ root@46.225.141.53:/opt/task-agent/
-
-# Then rebuild and restart on the server:
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose up -d --build"
-```
-
-### One-liner deploy
-
-```bash
-rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='.env' --exclude='.vercel' ./ root@46.225.141.53:/opt/task-agent/ && ssh root@46.225.141.53 "cd /opt/task-agent && docker compose up -d --build"
-```
-
-### Useful server commands
-
-```bash
-# View logs
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose logs -f"
-
-# Check status
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose ps"
-
-# Tail recent logs
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose logs --tail 50"
-
-# Exec into container
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose exec task-agent bash"
-
-# Restart without rebuild
-ssh root@46.225.141.53 "cd /opt/task-agent && docker compose restart"
-```
-
-### Docker setup
+## Docker setup
 
 - Multi-stage build: compiles TypeScript in build stage, runs from slim Node 22 image
 - Installs: git, curl, Vercel CLI, Supabase CLI, GitHub CLI, pnpm, Claude Code CLI, bun

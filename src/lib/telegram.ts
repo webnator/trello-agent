@@ -283,7 +283,7 @@ export async function startBot(): Promise<void> {
 
   bot.command("dashboard", async (ctx) => {
     const port = process.env.DASHBOARD_PORT || "3000";
-    const host = process.env.DASHBOARD_HOST || "46.225.141.53";
+    const host = process.env.DASHBOARD_HOST || "127.0.0.1";
     await ctx.reply(`Dashboard: http://${host}:${port}`);
   });
 
